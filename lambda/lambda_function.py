@@ -81,14 +81,14 @@ def getPaperInfo(body):
     return Paper(slackID=filedata["id"], filename=filedata["name"]), filedata
 
 
-def logReadPaper(paper, body, rawdata, anonSubmission):
+def logReadPaper(paper, user, channel, rawdata, anonSubmission):
     import boto3
     table = boto3.resource('dynamodb').Table('paper-a-day_papers')
     response = table.put_item(
         Item={
             'id': paper.slackID,
-            'user': body["user"]["name"],
-            'channel': body["channel"]["id"],
+            'user': user,
+            'channel': channel,
             'paper': paper.filename,
             'filedata': str(rawdata),
             'anonSubmission': anonSubmission
@@ -97,8 +97,8 @@ def logReadPaper(paper, body, rawdata, anonSubmission):
     return
 
 
-def processHTTPHooks(body, paper):
-    if str(body["user"]["name"]) in ["uttmark"]:
+def processHTTPHooks(user, paper):
+    if user in ["uttmark"]:
         import requests
 
         requests.post(
@@ -121,8 +121,8 @@ def handleDirectCall(body):
             if not body["actions"][0]["value"] == "NO":
                 paper, rawdata = getPaperInfo(body)
                 anonSubmission = body["channel"]["name"] == "directmessage"
-                logReadPaper(paper, body, rawdata, anonSubmission)
-                httpNotices = processHTTPHooks(body, paper)
+                logReadPaper(paper, body["user"]["name"], body["channel"]["id"], rawdata, anonSubmission)
+                httpNotices = processHTTPHooks(body["user"]["name"], paper)
                 if not anonSubmission:
                     client.chat_postMessage(channel=body["channel"]["id"],
                                             text="{} just read {} :tada:".format(body["user"]["name"], paper.filename))
@@ -130,15 +130,32 @@ def handleDirectCall(body):
                                                                            paper.filename) + httpNotices
             else:
                 return "Okay, I won't do anything then. We don't want another ... incident."
+    elif body["type"] == "message_action" and body["callback_id"] =="shortcut-mark_paper_read":
+        try:
+            paper = Paper(slackID=body["message"]["files"][0]["id"], filename=body["message"]["files"][0]["name"])
+            logReadPaper(paper, body["user"]["name"], body["channel"]["id"], body["message"]["files"], False)
+            httpNotices = processHTTPHooks(body, paper)
+        except KeyError:
+            return OK
+        client.chat_postMessage(channel=body["channel"]["id"],
+                                text="{} just read {} :tada:".format(body["user"]["name"], paper.filename))
+        return OK
 
 
 def lambda_handler(event, context):
+    """
+    This function is the entry point on AWS Lambda
+    (it's the first thing run!)
+
+    :param event:
+    :param context:
+    :return:
+    """
     # sometime slack will re-ping if we don't reply in time
     # return OK to let slack know we got the request and are working on it
     if 'X-Slack-Retry-Num' in event['headers']:
         slk_retry = event['headers']['X-Slack-Retry-Num']
         return 200
-
     if "body" in event.keys():
         try:
             if event["isBase64Encoded"]:
